@@ -137,7 +137,6 @@ function BookingPage() {
       const therapistUser = registeredUsers.find((u: any) => u.id === service.therapistId);
       return {
         id: service.therapistId,
-        id: service.therapistId,
         name: service.therapistName,
         title: service.qualification,
         specialization: service.specialization,
@@ -152,7 +151,8 @@ function BookingPage() {
         verified: true,
         nextAvailable: 'Today, 2:00 PM',
         bio: service.bio,
-        languages: service.languages
+        languages: service.languages,
+        availability: service.availability || []
       };
     });
 
@@ -203,11 +203,62 @@ function BookingPage() {
   const generateTimeSlots = (therapist: Therapist, selectedDate: string) => {
     if (!selectedDate) return [];
     
-    const dayName = new Date(selectedDate).toLocaleDateString('en-US', { weekday: 'long' });
-    const therapistAvailability = therapist.availability || [];
+    const selectedDateObj = new Date(selectedDate);
+    const dayName = selectedDateObj.toLocaleDateString('en-US', { weekday: 'long' });
+    
+    // Get therapist availability from multiple sources
+    let therapistAvailability = therapist.availability || [];
+    
+    // If no availability in therapist object, check therapist services
+    if (therapistAvailability.length === 0) {
+      const therapistServices = JSON.parse(localStorage.getItem('mindcare_therapist_services') || '[]');
+      const therapistService = therapistServices.find((s: any) => 
+        s.therapistId === therapist.id || s.therapistName === therapist.name
+      );
+      if (therapistService && therapistService.availability) {
+        therapistAvailability = therapistService.availability;
+      }
+    }
+    
+    // If still no availability, provide default slots
+    if (therapistAvailability.length === 0) {
+      const timeSlots = ['9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM'];
+      therapistAvailability = timeSlots.map(time => `${dayName} ${time}`);
+    }
     
     // Get all slots for the selected day
     const daySlots = therapistAvailability.filter(slot => slot.startsWith(dayName));
+    
+    // If no slots for the specific day, check if it's a weekday and provide default slots
+    if (daySlots.length === 0) {
+      const dayOfWeek = selectedDateObj.getDay(); // 0 = Sunday, 1 = Monday, etc.
+      if (dayOfWeek >= 1 && dayOfWeek <= 5) { // Monday to Friday
+        const timeSlots = ['9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM'];
+        const defaultSlots = timeSlots.map(time => `${dayName} ${time}`);
+        return defaultSlots.map(slot => {
+          const timeMatch = slot.match(/(\d{1,2}:\d{2} [AP]M)/);
+          const time = timeMatch ? timeMatch[1] : '';
+          
+          const convertTo24Hour = (time12: string) => {
+            const [time, modifier] = time12.split(' ');
+            let [hours, minutes] = time.split(':');
+            if (hours === '12') {
+              hours = '00';
+            }
+            if (modifier === 'PM') {
+              hours = (parseInt(hours, 10) + 12).toString();
+            }
+            return `${hours.padStart(2, '0')}:${minutes}`;
+          };
+          
+          return {
+            time: convertTo24Hour(time),
+            available: !isSlotBooked(therapist.id, selectedDate, convertTo24Hour(time)),
+            day: dayName
+          };
+        });
+      }
+    }
     
     // Extract time from slots like "Monday 9:00 AM"
     const timeSlots = daySlots.map(slot => {
@@ -229,12 +280,23 @@ function BookingPage() {
       
       return {
         time: convertTo24Hour(time),
-        available: true, // In real app, check against existing bookings
+        available: !isSlotBooked(therapist.id, selectedDate, convertTo24Hour(time)),
         day: dayName
       };
     });
     
     return timeSlots.sort((a, b) => a.time.localeCompare(b.time));
+  };
+  
+  // Check if a specific time slot is already booked
+  const isSlotBooked = (therapistId: string, date: string, time: string) => {
+    const allBookings = JSON.parse(localStorage.getItem('mindcare_bookings') || '[]');
+    return allBookings.some((booking: any) => 
+      (booking.therapistId === therapistId || booking.therapistName === therapistId) &&
+      booking.date === date &&
+      booking.time === time &&
+      booking.status !== 'cancelled'
+    );
   };
 
   // Update available time slots when therapist or date changes
@@ -260,6 +322,17 @@ function BookingPage() {
       toast.error('Please select a therapist, date, and time');
       return;
     }
+    
+    // Convert 24-hour time back to 12-hour format for display
+    const convertTo12Hour = (time24: string) => {
+      const [hours, minutes] = time24.split(':');
+      const hour = parseInt(hours, 10);
+      const ampm = hour >= 12 ? 'PM' : 'AM';
+      const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+      return `${displayHour}:${minutes} ${ampm}`;
+    };
+    
+    const displayTime = convertTo12Hour(selectedTime);
 
     // Create booking object and save to localStorage
     const booking: Appointment = {
@@ -269,13 +342,14 @@ function BookingPage() {
       therapistId: selectedTherapist.id,
       therapistName: selectedTherapist.name,
       date: selectedDate,
-      time: selectedTime,
+      time: selectedTime, // Keep 24-hour format for internal use
       duration: 60,
       amount: `$${selectedTherapist.hourlyRate}`,
       status: 'pending_confirmation',
       sessionType: 'video',
       patientEmail: user?.email || '',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      displayTime: displayTime // Add display time for UI
     };
 
     // Save to localStorage
@@ -286,7 +360,7 @@ function BookingPage() {
     // Track session booking
     trackSessionStart(booking);
 
-    toast.success(`Session booked with ${selectedTherapist.name}!`);
+    toast.success(`Session booked with ${selectedTherapist.name} for ${selectedDate} at ${displayTime}!`);
     setShowBookingModal(false);
     setShowPaymentModal(true);
   };
@@ -535,11 +609,14 @@ function BookingPage() {
                               <p className={`text-sm ${
                                 theme === 'dark' ? 'text-gray-400' : 'text-gray-600'
                               }`}>
-                                {appointment.date} at {appointment.time ? new Date(`2000-01-01T${appointment.time}`).toLocaleTimeString('en-US', {
-                                  hour: 'numeric',
-                                  minute: '2-digit',
-                                  hour12: true
-                                }) : appointment.time}
+                                {appointment.date} at {
+                                  appointment.displayTime || 
+                                  (appointment.time ? new Date(`2000-01-01T${appointment.time}`).toLocaleTimeString('en-US', {
+                                    hour: 'numeric',
+                                    minute: '2-digit',
+                                    hour12: true
+                                  }) : appointment.time)
+                                }
                               </p>
                               <p className={`text-sm ${
                                 theme === 'dark' ? 'text-gray-400' : 'text-gray-600'
@@ -858,7 +935,7 @@ function BookingPage() {
                                     ? theme === 'dark'
                                       ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                    : 'bg-red-100 text-red-500 cursor-not-allowed opacity-50'
                                 }`}
                               >
                                 {/* Convert 24-hour back to 12-hour for display */}
@@ -867,6 +944,9 @@ function BookingPage() {
                                   minute: '2-digit',
                                   hour12: true
                                 })}
+                                {!slot.available && (
+                                  <span className="block text-xs mt-1">Booked</span>
+                                )}
                               </motion.button>
                             ))}
                           </div>
@@ -877,7 +957,8 @@ function BookingPage() {
                             <p className={`text-sm ${
                               theme === 'dark' ? 'text-gray-400' : 'text-gray-600'
                             }`}>
-                              No available slots for {new Date(selectedDate).toLocaleDateString('en-US', { weekday: 'long' })}
+                              No available slots for {new Date(selectedDate).toLocaleDateString('en-US', { weekday: 'long' })}. 
+                              Please try a different date or contact the therapist directly.
                             </p>
                           </div>
                         ) : (
@@ -1036,7 +1117,11 @@ function BookingPage() {
                           Date & Time:
                         </span>
                         <span className={theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}>
-                          {selectedDate} at {selectedTime}
+                          {selectedDate} at {selectedTime ? new Date(`2000-01-01T${selectedTime}`).toLocaleTimeString('en-US', {
+                            hour: 'numeric',
+                            minute: '2-digit',
+                            hour12: true
+                          }) : 'Not selected'}
                         </span>
                       </div>
                       <div className="flex justify-between font-semibold pt-2 border-t border-gray-300 dark:border-gray-600">

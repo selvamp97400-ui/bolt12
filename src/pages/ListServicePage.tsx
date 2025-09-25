@@ -547,6 +547,11 @@ function ListServicePage() {
                               </button>
                             </div>
                           </div>
+                          <div className={`text-xs mb-2 ${
+                            theme === 'dark' ? 'text-gray-400' : 'text-gray-600'
+                          }`}>
+                            Selected: {daySlots.filter(slot => serviceData.availability?.includes(slot)).length} slots
+                          </div>
                           <div className="grid grid-cols-3 gap-2">
                             {timeSlots.map((time) => {
                               const fullSlot = `${day} ${time}`;
